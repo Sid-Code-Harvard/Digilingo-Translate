@@ -35,8 +35,22 @@ gtts_supported_languages = {
     'hindi': 'hi',
 }
 
-# Load the Whisper model
-model = whisper.load_model("small")
+# Load the Whisper model (cached so it only loads once)
+@st.cache_resource
+def load_whisper_model():
+    return whisper.load_model("base")
+
+model = load_whisper_model()
+
+# Load and cache MarianMT model/tokenizer per language (only loads once per language)
+@st.cache_resource
+def load_marian_model(target_language):
+    model_name = marian_models.get(target_language)
+    if model_name is None:
+        return None, None
+    tokenizer = MarianTokenizer.from_pretrained(model_name)
+    marian_model = MarianMTModel.from_pretrained(model_name)
+    return tokenizer, marian_model
 
 # for error message
 def home():
@@ -76,17 +90,14 @@ def transcribe_audio(audio_file):
 # Function to translate text using MarianMT
 def translate_text(text, target_language):
     try:
-        model_name = marian_models.get(target_language)
-        if model_name:
-            tokenizer = MarianTokenizer.from_pretrained(model_name)
-            model = MarianMTModel.from_pretrained(model_name)
-
-            translated = model.generate(**tokenizer(text, return_tensors="pt", padding=True))
-            translated_text = tokenizer.decode(translated[0], skip_special_tokens=True)
-            return translated_text
-        else:
+        tokenizer, marian_model = load_marian_model(target_language)
+        if tokenizer is None or marian_model is None:
             st.error(f"Model not available for language: {target_language}")
             return None
+
+        translated = marian_model.generate(**tokenizer(text, return_tensors="pt", padding=True))
+        translated_text = tokenizer.decode(translated[0], skip_special_tokens=True)
+        return translated_text
     except Exception as e:
         st.error(f"Error during translation: {e}")
         return None
@@ -116,7 +127,7 @@ def merge_audio_with_video(video_file, audio_file):
         # Set the new audio to the video
         final_video = video.set_audio(audio)
         output_file = "translated_video.mp4"
-        final_video.write_videofile(output_file)
+        final_video.write_videofile(output_file, codec="libx264", preset="ultrafast", threads=4)
         return output_file
     except Exception as e:
         st.error(f"Error merging audio and video: {e}")
@@ -133,8 +144,11 @@ def main():
     video_file = st.file_uploader("Upload a video", type=["mp4", "mov", "avi"])
 
     if video_file is not None:
+        st.session_state["video_bytes"] = video_file.getvalue()
+
+    if "video_bytes" in st.session_state:
         st.subheader("Original Video Preview")
-        st.video(video_file)
+        st.video(st.session_state["video_bytes"])
 
     # Select the language
     language = st.selectbox("Choose the target language", list(gtts_supported_languages.keys()))
@@ -146,7 +160,7 @@ def main():
             # Save the uploaded video
             video_path = f"uploaded_video.mp4"
             with open(video_path, mode="wb") as f:
-                f.write(video_file.read())
+                f.write(st.session_state["video_bytes"])
 
             # Extract audio from the video
             audio_path = extract_audio(video_path)
