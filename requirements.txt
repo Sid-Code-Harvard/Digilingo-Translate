@@ -8,3 +8,4 @@ torchaudio
 torchvision
 transformers
 ffmpeg-python
+sentencepiece
